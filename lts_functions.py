@@ -164,6 +164,9 @@ def bike_lane_analysis_with_parking(gdf_edges):
     gdf_edges = get_lanes(gdf_edges)
     gdf_edges = get_max_speed(gdf_edges)
     
+    # coerce non-numeric widths to NaN so comparisons don't error
+    gdf_edges['width'] = pd.to_numeric(gdf_edges['width'], errors='coerce')
+    
     # create a list of lts conditions
     # When multiple conditions are satisfied, the first one encountered in conditions is used
     conditions = [

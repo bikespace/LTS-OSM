@@ -29,8 +29,9 @@ import networkx as nx
 import matplotlib
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from shapely.geometry import Point
 
-city = "Victoria"
+city = "Toronto"
 
 gdf_nodes = pd.read_csv("data/gdf_nodes_%s.csv" %city, index_col=0)
 
@@ -74,7 +75,7 @@ G3b = ox.project_graph(G3)
 G4b = ox.project_graph(G4)
 # -
 
-iso_colors = ox.plot.get_colors(n=4, cmap='plasma', start=0, return_hex=True)
+iso_colors = ox.plot.get_colors(n=4, cmap='plasma', start=0)
 
 #trip_times = [10] 
 travel_speed = 15 #biking speed in km/hour
@@ -147,5 +148,3 @@ cbar.set_ticklabels(labels)
 plt.savefig("%s_isochrone_times_lts_remove_nodes_%s_time_%s.pdf" %(city, remove_nodes, trip_time))
 plt.savefig("%s_isochrone_times_lts_remove_nodes_%s_time_%s.png" %(city, remove_nodes, trip_time), dpi = 300)
 # -
-
-

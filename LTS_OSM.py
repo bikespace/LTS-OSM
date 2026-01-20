@@ -39,7 +39,7 @@ from lts_functions import (biking_permitted, is_separated_path, is_bike_lane, pa
 # ## Extract OSM tags to use in download
 
 # load the data
-f = open("victoriaosm.osm") # a larger bounding box for the city
+f = open("toronto.osm") # a larger bounding box for the city
 data = json.load(f)
 
 # +
@@ -60,9 +60,9 @@ tag_value_counts = tags_df.value_counts().reset_index() # count all the unique t
 tag_counts = tags_df['tag'].value_counts().reset_index() # count all the unique tags
 
 # explore the tags that start with 'cycleway'
-tag_counts[tag_counts['index'].str.contains('cycleway')]
+tag_counts[tag_counts['tag'].str.contains('cycleway')]
 
-way_tags = list(tag_counts['index']) # all unique tags from the OSM Toronto download
+way_tags = list(tag_counts['tag']) # all unique tags from the OSM Toronto download
 
 # add the above list to the global osmnx settings
 ox.settings.useful_tags_way += way_tags
@@ -75,8 +75,8 @@ ox.settings.osm_xml_way_tags = way_tags
 # keeping the footway and construction tags
 osmfilter = '["highway"]["area"!~"yes"]["access"!~"private"]["highway"!~"abandoned|bus_guideway|corridor|elevator|escalator|motor|planned|platform|proposed|raceway|steps"]["bicycle"!~"no"]["service"!~"private"]'
 
-city = "Victoria"
-province = "British Columbia"
+city = "Toronto"
+province = "Ontario"
 
 # check if data has already been downloaded; if not, download
 filepath = "data/%s.graphml" %city
@@ -92,7 +92,7 @@ else:
         retain_all=True,
         truncate_by_edge=True,
         simplify=False,
-        custom_filter=osmfilter2,
+        custom_filter=osmfilter,
     )
     # save graph
     print("saving graph")

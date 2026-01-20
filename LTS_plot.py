@@ -22,7 +22,7 @@ import pandas as pd
 import geopandas as gpd
 from matplotlib import pyplot as plt
 
-city = "Victoria"
+city = "Toronto"
 
 
 all_lts_df = pd.read_csv("data/all_lts_%s.csv" %city)
@@ -48,7 +48,7 @@ conditions = [
 values = ['g', 'b', 'y', 'r']
 
 # create a new column and use np.select to assign values to it using our lists as arguments
-all_lts['color'] = np.select(conditions, values)
+all_lts['color'] = np.select(conditions, values, default='none')
 # -
 
 fig, ax = plt.subplots()
@@ -74,5 +74,4 @@ ax.set_xticks([])
 plt.savefig("LTS_%s_has_speed_has_lanes.pdf" %city)
 plt.savefig("LTS_%s_has_speed_has_lanes.png" %city, dpi = 300)
 # -
-
 
