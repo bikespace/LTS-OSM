@@ -65,8 +65,8 @@ if remove_nodes == True:
 
 # +
 # point to start isochrone plot from
-y = 48.4378 # start of galloping goose
-x = -123.383
+y = 43.653015261561414 # start of galloping goose
+x = -79.38387982828714
 
 center_node = ox.distance.nearest_nodes(G1, x ,y) # use the same starting node for each graph
 G1b = ox.project_graph(G1) # this is slow - do we have to do this?

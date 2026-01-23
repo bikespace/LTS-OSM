@@ -78,6 +78,11 @@ osmfilter = '["highway"]["area"!~"yes"]["access"!~"private"]["highway"!~"abandon
 city = "Toronto"
 province = "Ontario"
 
+# Downtown Toronto core: City Hall center point with a 2km x 2km box (1km each side)
+# Source coords: Toronto City Hall ~ (43.653717, -79.384544)
+center_point = (43.653717, -79.384544)  # (lat, lon)
+half_size_m = 1000  # 1 km radius in each direction
+
 # check if data has already been downloaded; if not, download
 filepath = "data/%s.graphml" %city
 if os.path.exists(filepath):
@@ -87,8 +92,10 @@ if os.path.exists(filepath):
 else:
     # download data - this can be slow
     print("downloading data")
-    G = ox.graph_from_place(
-        "%s, %s, Canada" %(city, province),
+    north, south, east, west = ox.utils_geo.bbox_from_point(center_point, dist=half_size_m)
+    bbox = (north, south, east, west)
+    G = ox.graph_from_bbox(
+        bbox,
         retain_all=True,
         truncate_by_edge=True,
         simplify=False,
@@ -290,5 +297,3 @@ G_lts = ox.graph_from_gdfs(gdf_nodes, all_lts_small)
 # save LTS graph
 filepath = "data/%s_lts.graphml" %city
 ox.save_graphml(G_lts, filepath)
-
-
