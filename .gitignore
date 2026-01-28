@@ -178,3 +178,4 @@ pyrightconfig.json
 cache/
 data/
 output/
+.DS_Store
