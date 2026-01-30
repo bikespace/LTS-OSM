@@ -8,6 +8,8 @@ python build_query.py eastyork wikidata Q167585
 """
 
 import argparse
+from pathlib import Path
+from string import Template
 
 if __name__ == "__main__":
     
@@ -25,16 +27,10 @@ if __name__ == "__main__":
     key = args.key
     value = args.value
     
-    # build query file
-    
-    with open('%s.query' %region, 'w') as f:
-        f.write('[timeout:600][out:json][maxsize:2000000000];\narea\n')
-        f.write('  ["%s"="%s"];\n' %(key,value))
-        f.write('out body;\n')
-        f.write('((way["highway"](area); - way[footway="sidewalk"](area););\n')
-        f.write('  node(w)->.h;\n')
-        f.write('   (way[footway="sidewalk"][bicycle](area); - way[footway="sidewalk"][bicycle="no"](area););\n')
-        f.write('  node(w)->.s;\n')
-        f.write('  node.h.s;\n')
-        f.write(');\n')
-        f.write('out;\n')
+    # build query file from template
+    template_path = Path(__file__).with_name("query_template.overpass")
+    template_text = template_path.read_text()
+    query = Template(template_text).substitute(key=key, value=value)
+
+    output_path = Path(f"{region}.query")
+    output_path.write_text(query)
