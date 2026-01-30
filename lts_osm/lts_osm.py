@@ -1,5 +1,4 @@
 """Calculate Level of Traffic Stress maps with Open Street Map"""
-
 import argparse
 import json
 import logging
@@ -7,6 +6,7 @@ import numpy as np
 import os
 import osmnx as ox
 import pandas as pd
+import requests
 from rich.logging import RichHandler
 from rich.progress import (
     Progress,
@@ -16,6 +16,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+import time
 from tqdm import tqdm
 
 # import lts calculation functions
@@ -30,29 +31,114 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+OVERPASS_API_URL = os.environ.get("OVERPASS_API_URL", "http://overpass-api.de/api/interpreter")
+
+OUTPUT_DIR = os.environ.get("LTS_OUTPUT_DIR", "output")
+OSM_FILES_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "osm")
+LTS_FILES_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "lts")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(OSM_FILES_OUTPUT_DIR, exist_ok=True)
+os.makedirs(LTS_FILES_OUTPUT_DIR, exist_ok=True)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calculates the Level of Traffic Stress from Open Street Map data."
     )
-    parser.add_argument(
+    osm_file_group = parser.add_mutually_exclusive_group(required=True)
+    osm_file_group.add_argument(
+        "--overpass-query-file",
+        type=str,
+        help="Path to query file for downloading the osm data"
+    )
+    osm_file_group.add_argument(
         "--osm-file",
         type=str,
-        required=True,
         help="Path to the downloaded osm file to calculate the level of stress for",
+    )
+
+    area_group = parser.add_mutually_exclusive_group()
+    area_group.add_argument(
+        "--place",
+        type=str,
+        default="Toronto, Ontario",
+        help=(
+            'Place name for OSM download. Example: --place "Toronto, Ontario" Defaults to Toronto, Ontario'
+        ),
+    )
+    area_group.add_argument(
+        "--bbox",
+        type=str,
+        help=(
+            "Bounding box for OSM download as 'west,south,east,north' (lon,lat,lon,lat). "
+            'Example: --bbox="-79.406989,43.631478,-79.357878,43.672342"'
+        ),
     )
     return parser.parse_args()
 
+def download_osm_data_from_overpass_api(query_file: str, output_file_path: str) -> str:
+    with open(query_file, "rb") as osm_query_file:
+        data = osm_query_file.read()
+    for attempt in range(5):
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                with requests.post(
+                    OVERPASS_API_URL,
+                    data=data,
+                    timeout=300,
+                    stream=True,
+                ) as overpass_request:
+                    overpass_request.raise_for_status()
+                    total = int(overpass_request.headers.get("Content-Length", 0))
+                    task = progress.add_task("Requesting Overpass data ...", total=total if total > 0 else None)
+                    with open(output_file_path, "wb") as output_file:
+                        for chunk in overpass_request.iter_content(chunk_size=1024 * 128):
+                            if not chunk:
+                                continue
+                            output_file.write(chunk)
+                            if total > 0:
+                                progress.update(task, advance=len(chunk))
+            logger.info(f"Downloaded osm data to: {output_file_path}")
+            return output_file_path
+        except requests.HTTPError as e:
+            if overpass_request.status_code in (429, 502, 503, 504):
+                sleep_time = 5 * (attempt + 1)
+                logger.info(f"Request to download osm data returned {overpass_request.status_code}, retrying in {sleep_time} seconds")
+                time.sleep(sleep_time)
+                continue
+            raise
+
 
 def main(args: argparse.Namespace) -> int:
-    if not os.path.isfile(args.osm_file):
-        logger.error("Invalid --osm-file path: %a", args.osm_file)
-        return 2
-    with open(args.osm_file) as osm_file:
-        logger.info("Loading file %s", args.osm_file)
-        osm_data_json = json.load(osm_file)
+    place_list = args.place.strip().split(",")
+    city = place_list[0]
+    province = place_list[1]
+    place = args.place
 
-    logger.info("Total osm elemnts: %s", len(osm_data_json["elements"]))
+    if args.osm_file:
+        if not os.path.isfile(args.osm_file):
+            logger.error("Invalid --osm-file path: %a", args.osm_file)
+            return 2
+        with open(args.osm_file) as osm_file:
+            logger.info("Loading existing osm file %s", args.osm_file)
+            osm_data_json = json.load(osm_file)
+    elif args.overpass_query_file:
+        if not os.path.isfile(args.overpass_query_file):
+            logger.error("Invalid --overpass-query-file path: %a", args.overpass_query_file)
+            return 2
+        with open(args.overpass_query_file) as overpass_query_file:
+            logger.info("Using query file %s to download osm file from overpass api", args.overpass_query_file)
+            osm_data_json_path = download_osm_data_from_overpass_api(args.overpass_query_file, os.path.join(OSM_FILES_OUTPUT_DIR, f"{city.lower()}.json"))
+        with open(osm_data_json_path) as osm_data_json_downloaded:
+            osm_data_json = json.load(osm_data_json_downloaded)
+
+    logger.info("Total osm elements: %s", len(osm_data_json["elements"]))
 
     # dataframe of tags
     dfs_tags = []
@@ -89,41 +175,50 @@ def main(args: argparse.Namespace) -> int:
     # keeping the footway and construction tags
     osmfilter = '["highway"]["area"!~"yes"]["access"!~"private"]["highway"!~"abandoned|bus_guideway|corridor|elevator|escalator|motor|planned|platform|proposed|raceway|steps"]["bicycle"!~"no"]["service"!~"private"]'
 
-    city = "Toronto"
-    province = "Ontario"
-
-    # Downtown Toronto core: City Hall center point with a 2km x 2km box (1km each side)
-    # Source coords: Toronto City Hall ~ (43.653717, -79.384544)
-    center_point = (43.653717, -79.384544)  # (lat, lon)
-    half_size_m = 1000  # 1 km radius in each direction
+    bbox = None
+    if args.bbox:
+        try:
+            west, south, east, north = [float(v.strip()) for v in args.bbox.split(",")]
+            bbox = (west, south, east, north)
+        except ValueError:
+            logger.error("Invalid --bbox, expected 'west,south,east,north'")
+            return 2
 
     # check if data has already been downloaded; if not, download
-    filepath = f"data/{city}.graphml"
+    filepath = os.path.join(LTS_FILES_OUTPUT_DIR, f"{city.lower()}.graphml")
     if os.path.exists(filepath):
         # load graph
         logger.info("Loading saved graph %s", filepath)
         city_graphml = ox.load_graphml(filepath)
     else:
         # download the data - this can be slow
-        logger.info("Downloading data to %s", filepath)
-        north, south, east, west = ox.utils_geo.bbox_from_point(center_point, dist=half_size_m)
-        bbox = (north, south, east, west)
+        logger.info(f"Downloading data to {filepath}")
+        logger.info(f"BBOX: {bbox}")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             TimeElapsedColumn(),
         ) as progress:
             task = progress.add_task("Downloading OSM data...", total=None)
-            city_graphml = ox.graph_from_bbox(
-                bbox,
-                retain_all=True,
-                truncate_by_edge=True,
-                simplify=False,
-                custom_filter=osmfilter,
-            )
+            if bbox:
+                city_graphml = ox.graph_from_bbox(
+                    bbox,
+                    retain_all=True,
+                    truncate_by_edge=True,
+                    simplify=False,
+                    custom_filter=osmfilter,
+                )
+            else:
+                city_graphml = ox.graph_from_place(
+                    place,
+                    retain_all=True,
+                    truncate_by_edge=True,
+                    simplify=False,
+                    custom_filter=osmfilter,
+                )
             progress.update(task, completed=1)
         # save graph
-        logger.info("Saving graph")
+        logger.info(f"Saving graph {filepath}")
         ox.save_graphml(city_graphml, filepath)
 
     # plot downloaded graph - this is slow for a large area
@@ -135,25 +230,25 @@ def main(args: argparse.Namespace) -> int:
 
     # convert graph to node and edge GeoPandas GeoDataFrames
     gdf_nodes, gdf_edges = ox.graph_to_gdfs(city_graphml)
-    logger.info("Gdf edges shape: %s", gdf_edges.shape)
+    logger.info(f"Gdf edges shape: {gdf_edges.shape}", )
     gdf_allowed, gdf_not_allowed = biking_permitted(gdf_edges)
-    logger.info("Gdf allowed shape: %s", gdf_allowed.shape)
-    logger.info("Gdf not allowed shape: %s", gdf_not_allowed.shape)
+    logger.info(f"Gdf allowed shape: {gdf_allowed.shape}")
+    logger.info(f"Gdf not allowed shape: {gdf_not_allowed.shape}")
 
     # check for separated path
     separated_edges, unseparated_edges = is_separated_path(gdf_allowed)
     #assign separated ways lts = 1
     separated_edges['lts'] = 1
-    logger.info("Separated edges %s", separated_edges.shape)
-    logger.info("Unseparated edges %s", unseparated_edges.shape)
+    logger.info(f"Separated edges shape: {separated_edges.shape}", )
+    logger.info(f"Unseparated edges shape: {unseparated_edges.shape}")
 
     to_analyze, no_lane = is_bike_lane(unseparated_edges)
-    logger.info("To analyze %s", to_analyze.shape)
-    logger.info("No lane %s", no_lane.shape)
+    logger.info(f"To analyze shape: {to_analyze.shape}")
+    logger.info(f"No lane shape: {no_lane.shape}")
 
     parking_detected, parking_not_detected = parking_present(to_analyze)
-    logger.info("Parking detected %s", parking_detected.shape)
-    logger.info("Parking not detected %s", parking_not_detected.shape)
+    logger.info(f"Parking detected {parking_detected.shape}")
+    logger.info(f"Parking not detected {parking_not_detected.shape}")
 
     parking_lts = bike_lane_analysis_with_parking(parking_detected)
     
@@ -164,7 +259,7 @@ def main(args: argparse.Namespace) -> int:
 
     # final components: lts_no_lane, parking_lts, no_parking_lts, separated_edges
     # these should all add up to gdf_allowed
-    logger.info("Gdf allowed %s", gdf_allowed.shape)
+    logger.info(f"Gdf allowed {gdf_allowed.shape}")
     lts_no_lane.shape[0] + parking_lts.shape[0] + no_parking_lts.shape[0] + separated_edges.shape[0]
 
     gdf_not_allowed['lts'] = 0
@@ -299,21 +394,36 @@ def main(args: argparse.Namespace) -> int:
         gdf_nodes.loc[node,'lts'] = node_lts # assign node lts
     
     # Save data for plotting
-    gdf_nodes.to_csv(f"data/gdf_nodes_{city}.csv")
+    gdf_nodes_csv_file_path = os.path.join(LTS_FILES_OUTPUT_DIR, f"gdf_nodes_{city.lower()}.csv")
+    logger.info(f"Saving lts nodes csv to: {gdf_nodes_csv_file_path}")
+    gdf_nodes.to_csv(gdf_nodes_csv_file_path, index=True)
+
+    # Save GeoJSON
+    gdf_nodes_geojson_file_path = os.path.join(LTS_FILES_OUTPUT_DIR, f"gdf_nodes_{city.lower()}.geojson")
+    logger.info(f"Saving lts nodes to: {gdf_nodes_geojson_file_path}")
+    gdf_nodes.to_file(gdf_nodes_geojson_file_path, driver="GeoJSON")
 
     all_lts_small = all_lts[['osmid', 'lanes', 'name', 'highway', 'maxspeed', 'geometry', 'length', 'rule', 'lts', 
                             'lanes_assumed', 'maxspeed_assumed', 'message', 'short_message']]
-    all_lts_small.to_csv(f"data/all_lts_{city}.csv")
+    
+
+    all_lts_csv_file_path = os.path.join(LTS_FILES_OUTPUT_DIR, f"all_lts_{city.lower()}.csv")
+    logger.info(f"Saving all lts csv to: {all_lts_csv_file_path}")
+    all_lts_small.to_csv(all_lts_csv_file_path, index=True)
+
+    all_lts_geojson_file_path = os.path.join(LTS_FILES_OUTPUT_DIR, f"all_lts_{city.lower()}.geojson") 
+    logger.info(f"Saving all lts geojson to: {all_lts_geojson_file_path}")
+    all_lts_small.to_file(all_lts_geojson_file_path, driver="GeoJSON")
 
     # make graph with LTS information
     city_graphml_lts = ox.graph_from_gdfs(gdf_nodes, all_lts_small)
 
     # save LTS graph
-    filepath = f"data/{city}_lts.graphml"
-    ox.save_graphml(city_graphml_lts, filepath)
+    city_lts_graphml_filepath = os.path.join(LTS_FILES_OUTPUT_DIR, f"{city.lower()}_lts.graphml")
+    logger.info(f"Saving city lts graphml to: {city_lts_graphml_filepath}")
+    ox.save_graphml(city_graphml_lts, city_lts_graphml_filepath)
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main(parse_args()))

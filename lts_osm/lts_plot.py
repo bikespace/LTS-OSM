@@ -9,14 +9,6 @@ import geopandas as gpd
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
 from rich.logging import RichHandler
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    BarColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn
-)
 
 logging.basicConfig(
     level="INFO",
@@ -26,6 +18,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+OUTPUT_DIR = os.environ.get("LTS_OUTPUT_DIR", "output")
+PLOT_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "plots")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(PLOT_OUTPUT_DIR, exist_ok=True)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -43,10 +39,16 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Path to the gdf nodes csv"
     )
+    parser.add_argument(
+        "--city",
+        type=str,
+        required=True,
+        help='Name of the city this lts plot is for. Example --city "Toronto"'
+    )
     return parser.parse_args()
 
 def main(args: argparse.Namespace) -> int:
-    city = "Toronto"
+    city = args.city
     if not os.path.isfile(args.lts_csv_file):
         logger.error("Invalid --lts-csv-file path: %a", args.lts_csv_file)
         return 2
@@ -93,8 +95,14 @@ def main(args: argparse.Namespace) -> int:
     all_lts[all_lts['lts'] > 0].plot(ax = ax, linewidth= 0.1, color=all_lts[all_lts['lts'] > 0]['color'])
     handles = [Line2D([0], [0], color=c, lw=2, label=label) for _, label, c in lts_ranges]
     ax.legend(handles=handles, title="LTS", loc="upper right")
-    plt.savefig(f"data/lts_{city}.pdf")
-    plt.savefig(f"data/lts_{city}.png")
+
+    lts_plot_pdf_file_path = os.path.join(PLOT_OUTPUT_DIR, f"lts_{city.lower()}.pdf")
+    logger.info(f"Saving lts pdf plot to: {lts_plot_pdf_file_path}")
+    plt.savefig(lts_plot_pdf_file_path)
+
+    lts_plot_png_file_path = os.path.join(PLOT_OUTPUT_DIR, f"lts_{city.lower()}.png")
+    logger.info(f"Saving lts png plot to: {lts_plot_png_file_path}")
+    plt.savefig(lts_plot_png_file_path)
 
     ## Plot segments that aren't missing speed and lane info
     has_speed_lanes = all_lts[(~all_lts['maxspeed'].isna())
@@ -103,8 +111,13 @@ def main(args: argparse.Namespace) -> int:
     fig, ax = plt.subplots(figsize = (8,8))
     has_speed_lanes.plot(ax=ax, linewidth=0.5, color=has_speed_lanes['color'])
 
-    plt.savefig(f"LTS_{city}_has_speed_lanes.pdf")
-    plt.savefig(f"LTS_{city}_has_speed_lanes.png", dpi=300)
+    lts_has_speed_lanes_pdf_file_path = os.path.join(PLOT_OUTPUT_DIR, f"LTS_{city.lower()}_has_speed_lanes.pdf")
+    logger.info(f"Saving lts has speed lanes pdf to: {lts_has_speed_lanes_pdf_file_path}")
+    plt.savefig(lts_has_speed_lanes_pdf_file_path)
+
+    lts_has_speed_lanes_png_file_path = os.path.join(PLOT_OUTPUT_DIR, f"LTS_{city.lower()}_has_speed_lanes.png")
+    logger.info(f"Saving lts has speed lanes png to: {lts_has_speed_lanes_png_file_path}")
+    plt.savefig(lts_has_speed_lanes_png_file_path, dpi=300)
 
     return 0
 
