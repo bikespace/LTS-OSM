@@ -31,14 +31,14 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from shapely.geometry import Point
 
-city = "Toronto"
+city = "toronto"
 
-gdf_nodes = pd.read_csv("data/gdf_nodes_%s.csv" %city, index_col=0)
+gdf_nodes = pd.read_csv("output/lts/gdf_nodes_%s.csv" %city, index_col=0)
 
-all_lts = pd.read_csv("data/all_lts_%s.csv" %city, index_col=[0,1,2])
+all_lts = pd.read_csv("output/lts/all_lts_%s.csv" %city, index_col=[0,1,2])
 
 # load graph
-filepath = "data/%s_lts.graphml" %city
+filepath = "output/lts/%s_lts.graphml" %city
 G_lts = ox.load_graphml(filepath)
 
 # whether to remove nodes by lts or not
