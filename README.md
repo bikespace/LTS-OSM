@@ -2,6 +2,10 @@
 
 This code calculates cycling [Level of Traffic Stress](https://peterfurth.sites.northeastern.edu/level-of-traffic-stress/) for all road and path segments in a region using data from Open Street Map.
 
+## View the data on a map (in development)
+
+You can see an in-development map of the LTS data for Toronto at https://github.com/bikespace/bikespace/pull/325 (go down and find the most recent "view deployment" button and then click the link for "Level of Traffic Stress Map").
+
 ## Background
 
 This code is adapted from [Bike Ottawa's LTS code](https://github.com/BikeOttawa/stressmodel), modified to include Level of Traffic Stress for intersections. 
