@@ -1,6 +1,7 @@
 import pytest
 import pandas as pd
 import numpy as np
+import re
 
 def biking_permitted(gdf_edges):
     """
@@ -123,11 +124,48 @@ def parking_present(gdf_edges):
 def get_lanes(gdf_edges, default_lanes = 2):
 
     # make new assumed lanes column for use in calculations
-    
-    # fill na with default lanes
-    # if multiple lane values present, use the largest one
-    # this usually happens if multiple adjacent ways are included in the edge and there's a turning lane
-    gdf_edges['lanes_assumed'] = gdf_edges['lanes'].fillna(default_lanes).apply(lambda x: np.array(x, dtype = 'int')).apply(lambda x: np.max(x)) 
+
+    def parse_lanes_or_default(value):
+        if value is None:
+            return default_lanes
+
+        if isinstance(value, (list, tuple, set, np.ndarray)):
+            items = value
+        else:
+            if pd.isna(value):
+                return default_lanes
+            items = [value]
+
+        parsed = []
+        for item in items:
+            if item is None:
+                continue
+
+            if isinstance(item, (int, float, np.number)):
+                if pd.isna(item):
+                    continue
+                parsed.append(float(item))
+                continue
+
+            if isinstance(item, str):
+                # OSM lane values can be delimited (e.g. "2;1", "2|1") or decimals (e.g. "1.5").
+                for part in re.split(r"[;|,]", item):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    try:
+                        parsed.append(float(part))
+                    except ValueError:
+                        continue
+
+        if not parsed:
+            return default_lanes
+
+        # Use the largest lane value and round up to keep LTS assignment conservative.
+        return int(np.ceil(max(parsed)))
+
+    # if multiple lane values are present, use the largest parsed one
+    gdf_edges['lanes_assumed'] = gdf_edges['lanes'].apply(parse_lanes_or_default)
     
     return gdf_edges
 
