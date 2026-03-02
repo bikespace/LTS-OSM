@@ -153,9 +153,23 @@ def get_max_speed(gdf_edges, national=40, local=50, motorway=100, primary=80, se
 
     # create a new column and use np.select to assign values to it using our lists as arguments
     gdf_edges['maxspeed_assumed'] = np.select(conditions, values, default=gdf_edges['maxspeed'])
-    
-    # if multiple speed values present, use the largest one
-    gdf_edges['maxspeed_assumed'] = gdf_edges['maxspeed_assumed'].apply(lambda x: np.array(x, dtype = 'int')).apply(lambda x: np.max(x)) 
+
+    def parse_int_or_default(value, default_value=50):
+        if isinstance(value, (list, tuple, set, np.ndarray)):
+            parsed = []
+            for item in value:
+                try:
+                    parsed.append(int(item))
+                except (TypeError, ValueError):
+                    parsed.append(default_value)
+            return max(parsed) if parsed else default_value
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default_value
+
+    # if maxspeed cannot be parsed as int, assume 50
+    gdf_edges['maxspeed_assumed'] = gdf_edges['maxspeed_assumed'].apply(lambda x: parse_int_or_default(x, local))
 
     return gdf_edges
 
