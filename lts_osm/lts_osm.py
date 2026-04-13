@@ -63,11 +63,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calculates the Level of Traffic Stress from Open Street Map data."
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Dry run",
-    )
     osm_file_group = parser.add_mutually_exclusive_group(required=True)
     osm_file_group.add_argument(
         "--query-json-file",
