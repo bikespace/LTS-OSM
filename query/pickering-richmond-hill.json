@@ -2,11 +2,11 @@
     "areas": [
         {
             "name": "pickering",
-            "wikidata_id": "Q386626"
+            "wikidata": "Q386626"
         },
         {
             "name": "richmond-hill",
-            "wikidata_id": "Q52998"
+            "wikidata": "Q52998"
         }
     ]
 }

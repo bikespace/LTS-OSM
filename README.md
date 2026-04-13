@@ -29,7 +29,7 @@ This is code is forked and adapted from [Madeliene Bonsma-Fisher's LTS_OSM](http
 	```json
 	{
 	    "areas": [
-	        { "name": "victoria", "wikidata_id": "Q2132" }
+	        { "name": "victoria", "wikidata": "Q2132" }
 	    ]
 	}
 	```

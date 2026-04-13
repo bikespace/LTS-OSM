@@ -442,8 +442,8 @@ def main(args: argparse.Namespace) -> int:
         session = _make_overpass_session()
         for area in query_json.get("areas"):
             area_dict = {}
-            logger.info(f"Processing area: {area.get("name")}, Aread Id: {area.get("wikidata_id")}")
-            overpass_query = build_overpass_query(area.get("wikidata_id"))
+            logger.info(f"Processing area: {area.get("name")}, Area Id: {area.get("wikidata")}")
+            overpass_query = build_overpass_query(area.get("wikidata"))
             logger.info(f"Downloading osm data using overpass query: {overpass_query}")
             osm_data_xml_path = download_osm_data_from_overpass_api(
                 overpass_query,
