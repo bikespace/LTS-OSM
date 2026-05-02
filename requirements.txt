@@ -23,6 +23,7 @@ pathspec==1.0.3
 pillow==12.1.0
 platformdirs==4.5.1
 pluggy==1.6.0
+pyarrow==24.0.0
 Pygments==2.19.2
 pyogrio==0.12.1
 pyparsing==3.3.2

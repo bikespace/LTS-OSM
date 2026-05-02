@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from string import Template
 from typing import Any
+import time
 
 # import lts calculation functions
 from lts_functions import (biking_permitted, is_separated_path, is_bike_lane, parking_present,
@@ -129,6 +130,7 @@ def download_osm_data_from_overpass_api(
             data=query_str,
             timeout=300,
             stream=True,
+            headers={"User-Agent": "bikespace-LTS (https://github.com/bikespace/LTS-OSM)"},
         ) as overpass_request:
             overpass_request.raise_for_status()
             total = int(overpass_request.headers.get("Content-Length", 0))
@@ -143,11 +145,18 @@ def download_osm_data_from_overpass_api(
     logger.info(f"Downloaded osm data to: {output_file_path}")
     return output_file_path
 
-def generate_graphml(run_dir: Path, area_name: str, osm_data_xml_path: str) -> str:
-    graphml_dir =  run_dir / "graphml"
-    graphml_dir.mkdir(parents=True, exist_ok=True)
+def build_area_gdfs(run_dir: Path, area_name: str, osm_data_xml_path: str) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    parquet_dir = run_dir / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
 
-     # extract all unique way tag keys so osmnx retains them when parsing the graph
+    nodes_parquet_path = parquet_dir / f"{area_name}_nodes.parquet"
+    edges_parquet_path = parquet_dir / f"{area_name}_edges.parquet"
+
+    if nodes_parquet_path.exists() and edges_parquet_path.exists():
+        logger.info("Loading cached GeoDataFrames from %s", parquet_dir)
+        return gpd.read_parquet(nodes_parquet_path), gpd.read_parquet(edges_parquet_path)
+
+    # extract all unique way tag keys so osmnx retains them when parsing the graph
     osm_xml_tree = ET.parse(osm_data_xml_path)
     osm_xml_root = osm_xml_tree.getroot()
     if osm_xml_root.tag != 'osm':
@@ -158,60 +167,32 @@ def generate_graphml(run_dir: Path, area_name: str, osm_data_xml_path: str) -> s
         logger.warning("Overpass API remark: %s", remark.text.strip())
     logger.info("Total osm elements: %s", len(osm_xml_root))
 
-    # dataframe of tags
-    dfs_tags = []
-
-    for way in osm_xml_root.findall('way'):
-        tags = {tag.get('k'): tag.get('v') for tag in way.findall('tag')}
-        if not tags:
-            continue
-        if "name" in tags:
-            logger.debug("Adding road %s with tags: %s", tags["name"], tags)
-        df = pd.DataFrame.from_dict(tags, orient='index')
-        dfs_tags.append(df)
-
-    tags_df = pd.concat(dfs_tags).reset_index()
-    tags_df.columns = ["tag", "tagvalue"]
-    #logger.info("Tags dataframe: %s", tags_df)
-
-    tag_counts = tags_df['tag'].value_counts().reset_index() # count all the unique tags
-    way_tags = list(tag_counts['tag']) # all unique tags from the OSM download
+    way_tags = list({
+        tag.get('k')
+        for way in osm_xml_root.findall('way')
+        for tag in way.findall('tag')
+    })
 
     # add the above list to the global osmnx settings
     ox.settings.useful_tags_way += way_tags
     ox.settings.osm_xml_way_tags = way_tags
 
-    # build graph from the downloaded OSM XML, or load cached graphml
-    area_graphml_filepath = os.path.join(graphml_dir, f"{area_name}.graphml")
+    logger.info("Building graph from %s", osm_data_xml_path)
+    area_graph = ox.graph_from_xml(osm_data_xml_path, retain_all=True, simplify=False)
+    gdf_nodes, gdf_edges = ox.graph_to_gdfs(area_graph)
 
-    if os.path.exists(area_graphml_filepath):
-        logger.info("Loading saved graph %s", area_graphml_filepath)
-        area_graphml = ox.load_graphml(area_graphml_filepath)
-    else:
-        logger.info("Building graph from %s", osm_data_xml_path)
-        area_graphml = ox.graph_from_xml(osm_data_xml_path, retain_all=True, simplify=False)
-        logger.info("Saving graph %s", area_graphml_filepath)
-        ox.save_graphml(area_graphml, area_graphml_filepath)
-    return area_graphml_filepath
+    logger.info("Saving GeoDataFrames to %s", parquet_dir)
+    gdf_nodes.to_parquet(nodes_parquet_path)
+    gdf_edges.to_parquet(edges_parquet_path)
 
-def calculate_lts(run_dir: Path, area_name: str, area_graphml_path: str) -> dict[str, Any]:
+    return gdf_nodes, gdf_edges
+
+def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gdf_edges: gpd.GeoDataFrame) -> dict[str, Any]:
     geojson_dir = run_dir / "lts_geojson"
     geojson_dir.mkdir(parents=True, exist_ok=True)
     csv_dir = run_dir / "lts_csv"
     csv_dir.mkdir(parents=True, exist_ok=True)
-    graphml_dir = run_dir / "lts_graphml"
-    graphml_dir.mkdir(parents=True, exist_ok=True)
 
-    area_graphml = ox.load_graphml(area_graphml_path)
-    # plot downloaded graph - this is slow for a large area
-    #fig, ax = ox.plot_graph(city_graphml, node_size=0, edge_color="w", edge_linewidth=0.2)
-
-    # ## Analyze LTS
-    #
-    # Start with is biking allowed, get edges where biking is not *not* allowed.
-
-    # convert graph to node and edge GeoPandas GeoDataFrames
-    gdf_nodes, gdf_edges = ox.graph_to_gdfs(area_graphml)
     logger.info(f"Gdf edges shape: {gdf_edges.shape}", )
     gdf_allowed, gdf_not_allowed = biking_permitted(gdf_edges)
     logger.info(f"Gdf allowed shape: {gdf_allowed.shape}")
@@ -274,7 +255,7 @@ def calculate_lts(run_dir: Path, area_name: str, area_graphml_path: str) -> dict
                         'c3':'Increasing LTS to 3 because there are 3 or more lanes and no parking.',
                         'c4':'Increasing LTS to 2 because the bike lane width is less than 1.7 metres and no parking.',
                         'c5':'Increasing LTS to 3 because the maxspeed is between 51-64 km/h and no parking.',
-                        'c6':'Increasing LTS to 4 because the maxspeed is over 65 km/h and no parking.',
+                        'c6':'Increasing LTS to 4 because the maxspeed is over 56 km/h and no parking.',
                         'c7':'Increasing LTS to 3 because highway with bike lane is not \'residential\' and no parking.',
                         'm17':'Setting LTS to 1 because motor_vehicle=\'no\'.',
                         'm13':'Setting LTS to 1 because highway=\'pedestrian\'.',
@@ -314,10 +295,10 @@ def calculate_lts(run_dir: Path, area_name: str, area_graphml_path: str) -> dict
                      'b8':r'bike lane w/ parking, speed $>$ 55 km/h',
                      'b9':r'bike lane w/ parking, highway $\neq$ "residential"',
                      'c1':r'bike lane no parking, $\leq$ 50 km/h, highway $=$ "residential", $\leq$ 2 lanes',
-                     'c3':r'bike lane no parking, $\leq$ 65 km/h, $\geq$ 3 lanes',
+                     'c3':r'bike lane no parking, $\leq$ 56 km/h, $\geq$ 3 lanes',
                      'c4':r'bike lane width $<$ 1.7m, no parking',
                      'c5':r'bike lane no parking, speed 51-64 km/h',
-                     'c6':r'bike lane no parking, speed $>$ 65 km/h',
+                     'c6':r'bike lane no parking, speed $>$ 56 km/h',
                      'c7':r'bike lane no parking, highway $\neq$ "residential"',
                      'm17':r'mixed traffic, motor_vehicle $=$ "no"',
                      'm13':r'mixed traffic, highway $=$ "pedestrian"',
@@ -392,18 +373,9 @@ def calculate_lts(run_dir: Path, area_name: str, area_graphml_path: str) -> dict
     logger.info(f"Saving all lts geojson to: {all_lts_geojson_file_path}")
     all_lts_small_filtered.to_file(all_lts_geojson_file_path, driver="GeoJSON")
 
-    # make graph with LTS information
-    all_lts_graphml = ox.graph_from_gdfs(gdf_nodes, all_lts_small_filtered)
-
-    # save LTS graph
-    all_lts_graphml_filepath = os.path.join(graphml_dir, f"{area_name}_lts.graphml")
-    logger.info(f"Saving city lts graphml to: {all_lts_graphml_filepath}")
-    ox.save_graphml(all_lts_graphml, all_lts_graphml_filepath)
-
     lts_outputs = {"area_name": area_name}
     lts_outputs["lts_csv"] = all_lts_csv_file_path
     lts_outputs["lts_geojson"] = all_lts_geojson_file_path
-    lts_outputs["lts_graphml"] = all_lts_graphml_filepath
     lts_outputs["gdf_nodes_geojson"] = gdf_nodes_geojson_file_path
 
     return lts_outputs
@@ -448,14 +420,16 @@ def main(args: argparse.Namespace) -> int:
             area_dict["name"] = area.get("name")
             area_dict["xml_file_path"] = osm_data_xml_path
             areas_xml_list.append(area_dict)
+            logger.info("Waiting for 30 seconds for rate limiter")
+            time.sleep(30)
         areas_processed_dict["areas"] = areas_xml_list
         write_json_to_run_dir(run_dir, "areas_xml_file_path.json", areas_processed_dict)
     areas_lts_outputs = {"areas": []}
     areas_lts_outputs_list =  []
     for processed_area in areas_processed_dict.get("areas"):
         logger.info(f"Processing area {processed_area.get("name")}, XML filepath: {processed_area.get("xml_file_path")}")
-        area_graphml_filepath = generate_graphml(run_dir, processed_area.get("name"), processed_area.get("xml_file_path"))
-        area_lts_output = calculate_lts(run_dir, processed_area.get("name"), area_graphml_filepath)
+        gdf_nodes, gdf_edges = build_area_gdfs(run_dir, processed_area.get("name"), processed_area.get("xml_file_path"))
+        area_lts_output = calculate_lts(run_dir, processed_area.get("name"), gdf_nodes, gdf_edges)
         areas_lts_outputs_list.append(area_lts_output)
     areas_lts_outputs["areas"] = areas_lts_outputs_list
 

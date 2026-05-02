@@ -41,7 +41,7 @@ pytest lts_osm/lts_functions.py
 ### Data flow
 
 1. **Query JSON file** (`query/*.json`) — JSON file listing one or more areas by name and wikidata ID (e.g. `query/gta.json`). The Overpass QL query itself is built at runtime from `query/query_template.overpass`.
-2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API → builds an `osmnx` graphml per area → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
+2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API → builds an `osmnx` graph → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) cached as GeoParquet → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
 3. **`lts_osm/lts_functions.py`** — All LTS classification logic. Pure functions operating on GeoDataFrame slices.
 4. **`lts_osm/lts_plot.py`** — Reads the CSV outputs from step 2 and produces PDF/PNG maps.
 5. **`lts_osm/isochrone.py`** — Standalone notebook-style script for isochrone analysis from a point on the LTS graph.
@@ -73,16 +73,16 @@ Each run creates a timestamped directory. Within it:
 |------|---------|
 | `xmls/<area>.xml` | Raw Overpass XML download per area |
 | `areas_xml_file_path.json` | Manifest mapping area names → XML paths (pass to `--downloaded-xml-json-map` to skip re-downloading) |
-| `graphml/<area>.graphml` | osmnx graph (pre-LTS) per area |
+| `parquet/<area>_nodes.parquet` | GeoDataFrame of nodes cached as GeoParquet |
+| `parquet/<area>_edges.parquet` | GeoDataFrame of edges cached as GeoParquet |
 | `lts_csv/all_lts_<area>.csv` | Edge LTS with rule codes |
 | `lts_csv/gdf_nodes_<area>.csv` | Node LTS |
 | `lts_geojson/all_lts_<area>.geojson` | Edge LTS (filtered LTS 1–4) |
 | `lts_geojson/gdf_nodes_<area>.geojson` | Node LTS (filtered LTS 1–4) |
 | `lts_geojson/combined/all_lts_combined.geojson` | Combined edges across all areas (multi-area runs only) |
-| `lts_graphml/<area>_lts.graphml` | osmnx graph with LTS attributes |
 | `lts_outputs.json` | Manifest of all output file paths for the run |
 
-If `graphml/<area>.graphml` already exists in the run directory, the osmnx graph build step is skipped and it is loaded directly.
+If `parquet/<area>_nodes.parquet` and `parquet/<area>_edges.parquet` already exist in the run directory, the osmnx graph build step is skipped and the GeoDataFrames are loaded directly from parquet.
 
 ## Converting output to PMTiles (for web rendering)
 
