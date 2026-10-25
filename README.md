@@ -4,7 +4,7 @@ This code calculates cycling [Level of Traffic Stress](https://peterfurth.sites.
 
 ## View the data on a map
 
-You can view the LTS map for GTA at https://bikespace.ca/lts-map
+You can view the LTS map at https://bikespace.ca/lts-map
 
 ## Background
 
@@ -25,7 +25,7 @@ This is code is forked and adapted from [Madeliene Bonsma-Fisher's LTS_OSM](http
 ```
 2. Create a query JSON file listing the areas you want to study.
 	- Go to [openstreetmap.org](https://www.openstreetmap.org), search for the region (e.g. "Victoria"), click the matching relation, and scroll to find the `wikidata` tag (e.g. `Q2132`).
-	- Create a JSON file (see `query/gta.json` for an example) with an `areas` array:
+	- Create a JSON file (see `query/query.json` for an example) with an `areas` array:
 	```json
 	{
 	    "areas": [
@@ -36,7 +36,7 @@ This is code is forked and adapted from [Madeliene Bonsma-Fisher's LTS_OSM](http
 3. Run the script to download OSM data and calculate LTS:
 ```shell
 	# Download from Overpass and calculate LTS for all areas in the query file
-	python lts_osm/lts_osm.py --query-json-file query/gta.json
+	python lts_osm/lts_osm.py --query-json-file query/query.json
 
 	# Outputs are saved to a timestamped run directory: output/runs/<timestamp>/
 
