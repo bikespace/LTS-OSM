@@ -8,27 +8,18 @@ import osmnx as ox
 import pandas as pd
 import geopandas as gpd
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import xml.etree.ElementTree as ET
 from rich.logging import RichHandler
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
 from datetime import datetime
 from pathlib import Path
-from string import Template
 from typing import Any
 import time
 
 # import lts calculation functions
 from lts_functions import (biking_permitted, is_separated_path, is_bike_lane, parking_present,
                            bike_lane_analysis_no_parking, bike_lane_analysis_with_parking, mixed_traffic)
+from overpass import (OverpassDownloadError, OverpassIncompleteError, build_overpass_query,
+                      download_with_retries, make_overpass_session, validate_osm_xml)
 
 logging.basicConfig(
     level="INFO",
@@ -38,12 +29,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-OVERPASS_API_URL = os.environ.get("OVERPASS_API_URL", "http://overpass-api.de/api/interpreter")
-
 OUTPUT_DIR = os.environ.get("LTS_OUTPUT_DIR", "output")
 OSM_FILES_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "osm")
 LTS_FILES_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "lts")
-OVERPASS_QUERY_TEMPLATE = os.path.join("query/query_template.overpass", "")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(OSM_FILES_OUTPUT_DIR, exist_ok=True)
 os.makedirs(LTS_FILES_OUTPUT_DIR, exist_ok=True)
@@ -53,6 +41,8 @@ def build_run_dir_name(now: datetime | None = None) -> str:
     return f"{now:%Y%m%dT%H%M%S}"
 
 def create_run_directory(args: argparse.Namespace, now: datetime | None = None) -> Path:
+    if args.resume_run_dir:
+        return Path(args.resume_run_dir)
     output_root = Path(OUTPUT_DIR) 
     output_root = output_root / "runs"
     output_root.mkdir(parents=True, exist_ok=True)
@@ -80,27 +70,15 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Path to a json file map of areas and it's downloaded xml path",
     )
-    return parser.parse_args()
-
-def _make_overpass_session() -> requests.Session:
-    session = requests.Session()
-    retry = Retry(
-        total=5,
-        backoff_factor=2,
-        status_forcelist={429, 502, 503, 504},
-        respect_retry_after_header=True,
-        allowed_methods={"POST"},
+    parser.add_argument(
+        "--resume-run-dir",
+        type=str,
+        help="Run directory of an interrupted --query-json-file run; reuses its complete XMLs and downloads the rest",
     )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-def build_overpass_query(area_id: str) -> str:
-    template_path = Path(OVERPASS_QUERY_TEMPLATE)
-    template_text = template_path.read_text()
-    query = Template(template_text).substitute(key="wikidata", value=area_id)
-    return query
+    args = parser.parse_args()
+    if args.resume_run_dir and not args.query_json_file:
+        parser.error("--resume-run-dir requires --query-json-file")
+    return args
 
 def write_json_to_run_dir(
     run_dir: Path,
@@ -115,35 +93,27 @@ def write_json_to_run_dir(
     logger.info("Saved %s to %s", log_label or filename, output_path)
     return output_path
 
-def download_osm_data_from_overpass_api(
-    query_str: str, output_file_path: str, session: requests.Session
-) -> str:
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-    ) as progress:
-        with session.post(
-            OVERPASS_API_URL,
-            data=query_str,
-            timeout=300,
-            stream=True,
-            headers={"User-Agent": "bikespace-LTS (https://github.com/bikespace/LTS-OSM)"},
-        ) as overpass_request:
-            overpass_request.raise_for_status()
-            total = int(overpass_request.headers.get("Content-Length", 0))
-            task = progress.add_task("Requesting Overpass data ...", total=total if total > 0 else None)
-            with open(output_file_path, "wb") as output_file:
-                for chunk in overpass_request.iter_content(chunk_size=1024 * 128):
-                    if not chunk:
-                        continue
-                    output_file.write(chunk)
-                    if total > 0:
-                        progress.update(task, advance=len(chunk))
-    logger.info(f"Downloaded osm data to: {output_file_path}")
-    return output_file_path
+def download_area(
+    area: dict[str, Any], xmls_download_dir: Path, session: requests.Session, reuse_existing: bool
+) -> tuple[dict[str, Any], bool]:
+    """Download one area's XML. Returns its manifest entry and whether Overpass was called."""
+    area_dict = {"name": area.get("name"), "wikidata": area.get("wikidata")}
+    osm_data_xml_path = os.path.join(xmls_download_dir, f"{area.get("name")}.xml")
+    if reuse_existing and os.path.isfile(osm_data_xml_path):
+        try:
+            validate_osm_xml(osm_data_xml_path)
+            logger.info("Reusing previously downloaded %s", osm_data_xml_path)
+            return {**area_dict, "xml_file_path": osm_data_xml_path, "status": "ok"}, False
+        except OverpassIncompleteError as e:
+            logger.warning("Re-downloading %s: %s", osm_data_xml_path, e)
+    overpass_query = build_overpass_query(area.get("wikidata"))
+    logger.info(f"Downloading osm data using overpass query: {overpass_query}")
+    try:
+        download_with_retries(overpass_query, osm_data_xml_path, session)
+    except OverpassDownloadError as e:
+        logger.error("Giving up on %s: %s", area.get("name"), e)
+        return {**area_dict, "status": "failed", "error": str(e)}, True
+    return {**area_dict, "xml_file_path": osm_data_xml_path, "status": "ok"}, True
 
 def build_area_gdfs(run_dir: Path, area_name: str, osm_data_xml_path: str) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     parquet_dir = run_dir / "parquet"
@@ -156,15 +126,12 @@ def build_area_gdfs(run_dir: Path, area_name: str, osm_data_xml_path: str) -> tu
         logger.info("Loading cached GeoDataFrames from %s", parquet_dir)
         return gpd.read_parquet(nodes_parquet_path), gpd.read_parquet(edges_parquet_path)
 
+    # fail before building a graph from a truncated or errored download
+    validate_osm_xml(osm_data_xml_path)
+
     # extract all unique way tag keys so osmnx retains them when parsing the graph
     osm_xml_tree = ET.parse(osm_data_xml_path)
     osm_xml_root = osm_xml_tree.getroot()
-    if osm_xml_root.tag != 'osm':
-        os.remove(osm_data_xml_path)
-        logger.error("Downloaded file is not valid OSM XML (root tag: <%s>). File deleted, please retry.", osm_xml_root.tag)
-    remark = osm_xml_root.find('remark')
-    if remark is not None and remark.text:
-        logger.warning("Overpass API remark: %s", remark.text.strip())
     logger.info("Total osm elements: %s", len(osm_xml_root))
 
     way_tags = list({
@@ -381,6 +348,9 @@ def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gd
     return lts_outputs
 
 def main(args: argparse.Namespace) -> int:
+    if args.resume_run_dir and not os.path.isdir(args.resume_run_dir):
+        logger.error("Invalid --resume-run-dir: %a", args.resume_run_dir)
+        return 2
     run_dir = create_run_directory(args)
     query_file = args.query_json_file
     areas_processed_dict = {}
@@ -389,8 +359,8 @@ def main(args: argparse.Namespace) -> int:
         if not os.path.isfile(args.osm_file):
             logger.error("Invalid --osm-file path: %a", args.osm_file)
             return 2
-        osm_data_xml_path = args.osm_file
-        logger.info("Using existing osm file %s", osm_data_xml_path)
+        logger.info("Using existing osm file %s", args.osm_file)
+        areas_processed_dict["areas"] = [{"name": Path(args.osm_file).stem, "xml_file_path": args.osm_file}]
     elif args.downloaded_xml_json_map:
         if not os.path.isfile(args.downloaded_xml_json_map):
             logger.error("Invalid --downloaded-xml-json-map: %a", args.downloaded_xml_json_map)
@@ -404,29 +374,31 @@ def main(args: argparse.Namespace) -> int:
         query_json = json.loads(Path(query_file).read_text(encoding="utf-8"))
         logger.info(f"Number of areas to download: {len(query_json.get("areas"))}")
         areas_xml_list = []
-        xmls_download_dir = run_dir / "xmls"
-        xmls_download_dir.mkdir()
-        session = _make_overpass_session()
-        for area in query_json.get("areas"):
-            area_dict = {}
-            logger.info(f"Processing area: {area.get("name")}, Area Id: {area.get("wikidata")}")
-            overpass_query = build_overpass_query(area.get("wikidata"))
-            logger.info(f"Downloading osm data using overpass query: {overpass_query}")
-            osm_data_xml_path = download_osm_data_from_overpass_api(
-                overpass_query,
-                os.path.join(xmls_download_dir, f"{area.get("name")}.xml"),
-                session,
-            )
-            area_dict["name"] = area.get("name")
-            area_dict["xml_file_path"] = osm_data_xml_path
-            areas_xml_list.append(area_dict)
-            logger.info("Waiting for 30 seconds for rate limiter")
-            time.sleep(30)
         areas_processed_dict["areas"] = areas_xml_list
-        write_json_to_run_dir(run_dir, "areas_xml_file_path.json", areas_processed_dict)
+        xmls_download_dir = run_dir / "xmls"
+        xmls_download_dir.mkdir(exist_ok=True)
+        session = make_overpass_session()
+        called_overpass = False
+        for area in query_json.get("areas"):
+            logger.info(f"Processing area: {area.get("name")}, Area Id: {area.get("wikidata")}")
+            if called_overpass:
+                logger.info("Waiting for 30 seconds for rate limiter")
+                time.sleep(30)
+            area_dict, called_overpass = download_area(
+                area, xmls_download_dir, session, reuse_existing=bool(args.resume_run_dir)
+            )
+            areas_xml_list.append(area_dict)
+            # written after every area so an interrupted run can be resumed with --resume-run-dir
+            write_json_to_run_dir(run_dir, "areas_xml_file_path.json", areas_processed_dict)
+
+    failed_areas = [
+        area.get("name") for area in areas_processed_dict.get("areas") if area.get("status", "ok") != "ok"
+    ]
     areas_lts_outputs = {"areas": []}
     areas_lts_outputs_list =  []
     for processed_area in areas_processed_dict.get("areas"):
+        if processed_area.get("name") in failed_areas:
+            continue
         logger.info(f"Processing area {processed_area.get("name")}, XML filepath: {processed_area.get("xml_file_path")}")
         gdf_nodes, gdf_edges = build_area_gdfs(run_dir, processed_area.get("name"), processed_area.get("xml_file_path"))
         area_lts_output = calculate_lts(run_dir, processed_area.get("name"), gdf_nodes, gdf_edges)
@@ -449,6 +421,13 @@ def main(args: argparse.Namespace) -> int:
         lts_combined_file_path = os.path.join(lts_combined_geojson_dir, "all_lts_combined.geojson")
         lts_combined_gdf.to_file(lts_combined_file_path, driver="GeoJSON")
 
+    if failed_areas:
+        logger.error(
+            "Could not download: %s. Retry only these areas with: "
+            "python lts_osm/lts_osm.py --query-json-file %s --resume-run-dir %s",
+            ", ".join(failed_areas), query_file, run_dir,
+        )
+        return 1
     return 0
 
 if __name__ == "__main__":
