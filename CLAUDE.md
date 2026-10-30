@@ -14,7 +14,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The `OVERPASS_API_URL` and `LTS_OUTPUT_DIR` environment variables can override defaults (`http://overpass-api.de/api/interpreter` and `output/`, respectively).
+The `OVERPASS_API_URL` and `LTS_OUTPUT_DIR` environment variables can override defaults (`https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter` and `output/`, respectively). `OVERPASS_API_URL` is a comma-separated list; retries rotate through it. `OVERPASS_MAX_ATTEMPTS` (default 6) and `OVERPASS_RETRY_BASE_DELAY` (seconds, default 60, doubling up to 600) control download retries.
 
 ## Common commands
 
@@ -26,6 +26,9 @@ python lts_osm/lts_osm.py --query-json-file query/gta.json
 # Pass the areas_xml_file_path.json written to the run directory by a prior run
 python lts_osm/lts_osm.py --downloaded-xml-json-map output/runs/<timestamp>/areas_xml_file_path.json
 
+# Resume an interrupted or partly failed run: reuses complete XMLs in that run directory, downloads the rest
+python lts_osm/lts_osm.py --query-json-file query/gta.json --resume-run-dir output/runs/<timestamp>
+
 # Re-run using a single previously downloaded OSM XML file
 python lts_osm/lts_osm.py --osm-file output/runs/<timestamp>/xmls/toronto.xml
 
@@ -33,7 +36,7 @@ python lts_osm/lts_osm.py --osm-file output/runs/<timestamp>/xmls/toronto.xml
 python lts_osm/lts_plot.py --lts-csv-file output/runs/<timestamp>/lts_csv/all_lts_toronto.csv --gdf-nodes-file output/runs/<timestamp>/lts_csv/gdf_nodes_toronto.csv --city "Toronto"
 
 # Run tests
-pytest lts_osm/lts_functions.py
+pytest lts_osm/lts_functions.py lts_osm/test_overpass.py
 ```
 
 ## Architecture
@@ -41,7 +44,7 @@ pytest lts_osm/lts_functions.py
 ### Data flow
 
 1. **Query JSON file** (`query/*.json`) — JSON file listing one or more areas by name and wikidata ID (e.g. `query/gta.json`). The Overpass QL query itself is built at runtime from `query/query_template.overpass`.
-2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API → builds an `osmnx` graph → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) cached as GeoParquet → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
+2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API (`lts_osm/overpass.py`: downloads to `<area>.xml.part`, rejects truncated XML or `<remark>runtime error…</remark>`, retries with backoff across mirror URLs; an area that still fails is marked `"status": "failed"` in the manifest, skipped, and the run exits 1) → builds an `osmnx` graph → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) cached as GeoParquet → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
 3. **`lts_osm/lts_functions.py`** — All LTS classification logic. Pure functions operating on GeoDataFrame slices.
 4. **`lts_osm/lts_plot.py`** — Reads the CSV outputs from step 2 and produces PDF/PNG maps.
 5. **`lts_osm/isochrone.py`** — Standalone notebook-style script for isochrone analysis from a point on the LTS graph.
@@ -72,7 +75,7 @@ Each run creates a timestamped directory. Within it:
 | Path | Content |
 |------|---------|
 | `xmls/<area>.xml` | Raw Overpass XML download per area |
-| `areas_xml_file_path.json` | Manifest mapping area names → XML paths (pass to `--downloaded-xml-json-map` to skip re-downloading) |
+| `areas_xml_file_path.json` | Manifest mapping area names → XML paths and download `status`, rewritten after each area (pass to `--downloaded-xml-json-map` to skip re-downloading) |
 | `parquet/<area>_nodes.parquet` | GeoDataFrame of nodes cached as GeoParquet |
 | `parquet/<area>_edges.parquet` | GeoDataFrame of edges cached as GeoParquet |
 | `lts_csv/all_lts_<area>.csv` | Edge LTS with rule codes |

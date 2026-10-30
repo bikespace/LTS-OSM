@@ -35,6 +35,10 @@
         {
             "name": "ottawa",
             "wikidata": "Q1930"
+        },
+        {
+            "name": "gatineau",
+            "wikidata": "Q141844"
         }
     ]
 }

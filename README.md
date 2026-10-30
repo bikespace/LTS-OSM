@@ -43,9 +43,13 @@ This is code is forked and adapted from [Madeliene Bonsma-Fisher's LTS_OSM](http
 	# Re-run LTS calculation using already-downloaded XML files (skips Overpass download)
 	python lts_osm/lts_osm.py --downloaded-xml-json-map output/runs/<timestamp>/areas_xml_file_path.json
 
+	# Failed or interrupted downloads are retried automatically. If an area still fails, the run
+	# finishes the other areas and exits 1. Resume it to download only what is missing:
+	python lts_osm/lts_osm.py --query-json-file query/query.json --resume-run-dir output/runs/<timestamp>
+
 	# For help:
 	python lts_osm/lts_osm.py --help
-	usage: lts_osm.py [-h] (--query-json-file QUERY_JSON_FILE | --osm-file OSM_FILE | --downloaded-xml-json-map DOWNLOADED_XML_JSON_MAP)
+	usage: lts_osm.py [-h] (--query-json-file QUERY_JSON_FILE | --osm-file OSM_FILE | --downloaded-xml-json-map DOWNLOADED_XML_JSON_MAP) [--resume-run-dir RESUME_RUN_DIR]
 
 	Calculates the Level of Traffic Stress from Open Street Map data.
 
@@ -56,6 +60,13 @@ This is code is forked and adapted from [Madeliene Bonsma-Fisher's LTS_OSM](http
 	--osm-file OSM_FILE   Path to a single downloaded OSM XML file
 	--downloaded-xml-json-map DOWNLOADED_XML_JSON_MAP
 							Path to a json file mapping areas to their downloaded xml paths
+	--resume-run-dir RESUME_RUN_DIR
+							Run directory of an interrupted --query-json-file run; reuses its complete XMLs and downloads the rest
+
+	# Download retries can be tuned with environment variables:
+	#   OVERPASS_API_URL           comma-separated Overpass URLs, rotated on retry
+	#   OVERPASS_MAX_ATTEMPTS      attempts per area (default 6)
+	#   OVERPASS_RETRY_BASE_DELAY  seconds before the first retry, doubling up to 600 (default 60)
 ```
 4. Plot the results with `lts_osm/lts_plot.py`
 ```shell
