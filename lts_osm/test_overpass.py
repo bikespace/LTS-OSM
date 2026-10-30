@@ -47,29 +47,35 @@ def write_xml(tmp_path):
 
 
 def test_validate_accepts_complete_xml(write_xml):
+    """Tests the validate function for a complete and valid XML"""
     validate_osm_xml(write_xml(VALID_XML))
 
 
 def test_validate_accepts_harmless_remark(write_xml):
+    """Tests the validate function for a xml with harmless remark """
     validate_osm_xml(write_xml(HARMLESS_REMARK_XML))
 
 
 def test_validate_rejects_truncated_xml(write_xml):
+    """Test the validate function for a xml that has been truncated due to a cut off"""
     with pytest.raises(OverpassIncompleteError, match="truncated"):
         validate_osm_xml(write_xml(VALID_XML[:200]))
 
 
 def test_validate_rejects_runtime_error_remark(write_xml):
+    """Test the validate function for a xml that has a remark for a timed out query"""
     with pytest.raises(OverpassIncompleteError, match="Query timed out"):
         validate_osm_xml(write_xml(TIMED_OUT_XML))
 
 
 def test_validate_rejects_non_osm_root(write_xml):
+    """Test the validate function that will reject a xml that doesn't have a osm root tag"""
     with pytest.raises(OverpassIncompleteError, match="root tag: <html>"):
         validate_osm_xml(write_xml(HTML_ERROR))
 
 
 def test_read_timeout_outlasts_query_timeout():
+    """Validate that the read timeout is always a minute longer than the query timeout set"""
     assert get_read_timeout(QUERY) == 660
     assert get_read_timeout("way(1);out;") == overpass.OVERPASS_DEFAULT_QUERY_TIMEOUT + 60
 
@@ -118,6 +124,7 @@ def sleeps(monkeypatch):
 
 
 def test_retries_after_connection_dropped_mid_download(tmp_path, sleeps):
+    """Test that the process retries after connection gets dropped mid download""""
     output = str(tmp_path / "area.xml")
     session = FakeSession([
         FakeResponse([VALID_XML[:150]], fail_after_chunks=True),
@@ -130,6 +137,7 @@ def test_retries_after_connection_dropped_mid_download(tmp_path, sleeps):
 
 
 def test_retries_after_runtime_error_and_rotates_urls(tmp_path, sleeps):
+    """Test the process tries a different url if it maxes out retries and tries a different URL"""
     output = str(tmp_path / "area.xml")
     session = FakeSession([
         requests.exceptions.RetryError("too many 502 error responses"),
@@ -142,6 +150,7 @@ def test_retries_after_runtime_error_and_rotates_urls(tmp_path, sleeps):
 
 
 def test_gives_up_after_max_attempts(tmp_path, sleeps):
+    """Validate that process gives up after max number of attempts to download the xml is reached"""
     output = str(tmp_path / "area.xml")
     session = FakeSession([FakeResponse(status_code=504), FakeResponse([TIMED_OUT_XML])])
     with pytest.raises(OverpassDownloadError, match="after 2 attempts"):
@@ -151,6 +160,7 @@ def test_gives_up_after_max_attempts(tmp_path, sleeps):
 
 
 def test_does_not_retry_bad_query(tmp_path, sleeps):
+    """Validate that the process throws an error if it tries to download with a malformed query"""
     session = FakeSession([FakeResponse(status_code=400)])
     with pytest.raises(OverpassDownloadError, match="rejected the query"):
         download_with_retries(QUERY, str(tmp_path / "area.xml"), session, ["https://a"], max_attempts=3)

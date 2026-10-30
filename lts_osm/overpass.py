@@ -27,7 +27,7 @@ OVERPASS_API_URLS = [
     url.strip()
     for url in os.environ.get(
         "OVERPASS_API_URL",
-        "https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
     ).split(",")
     if url.strip()
 ]
