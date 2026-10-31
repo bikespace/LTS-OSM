@@ -29,6 +29,9 @@ python lts_osm/lts_osm.py --downloaded-xml-json-map output/runs/<timestamp>/area
 # Resume an interrupted or partly failed run: reuses complete XMLs in that run directory, downloads the rest
 python lts_osm/lts_osm.py --query-json-file query/gta.json --resume-run-dir output/runs/<timestamp>
 
+# Change the isolated-network threshold (metres, default 100; 0 disables)
+python lts_osm/lts_osm.py --query-json-file query/gta.json --min-component-length 200
+
 # Re-run using a single previously downloaded OSM XML file
 python lts_osm/lts_osm.py --osm-file output/runs/<timestamp>/xmls/toronto.xml
 
@@ -44,7 +47,7 @@ pytest lts_osm/lts_functions.py lts_osm/test_overpass.py
 ### Data flow
 
 1. **Query JSON file** (`query/*.json`) — JSON file listing one or more areas by name and wikidata ID (e.g. `query/gta.json`). The Overpass QL query itself is built at runtime from `query/query_template.overpass`.
-2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API (`lts_osm/overpass.py`: downloads to `<area>.xml.part`, rejects truncated XML or `<remark>runtime error…</remark>`, retries with backoff across mirror URLs; an area that still fails is marked `"status": "failed"` in the manifest, skipped, and the run exits 1) → builds an `osmnx` graph → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) cached as GeoParquet → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
+2. **`lts_osm/lts_osm.py`** — Entry point. Downloads OSM XML per area via Overpass API (`lts_osm/overpass.py`: downloads to `<area>.xml.part`, rejects truncated XML or `<remark>runtime error…</remark>`, retries with backoff across mirror URLs; an area that still fails is marked `"status": "failed"` in the manifest, skipped, and the run exits 1) → builds an `osmnx` graph (all components retained; simplified with `edge_attrs_differ=["osmid"]` so only segments of the same way merge and tags stay scalar, and `node_attrs_include=["highway"]` so signal/stop nodes survive) → converts to GeoPandas GeoDataFrames (`gdf_nodes`, `gdf_edges`) cached as GeoParquet → applies LTS classification pipeline → writes outputs. All outputs for a run go into a timestamped directory `output/runs/<timestamp>/`.
 3. **`lts_osm/lts_functions.py`** — All LTS classification logic. Pure functions operating on GeoDataFrame slices.
 4. **`lts_osm/lts_plot.py`** — Reads the CSV outputs from step 2 and produces PDF/PNG maps.
 5. **`lts_osm/isochrone.py`** — Standalone notebook-style script for isochrone analysis from a point on the LTS graph.
@@ -59,7 +62,8 @@ Each stage splits edges and assigns a `rule` code (e.g. `p2`, `s3`, `b1`, `m5`);
 4. `parking_present` — splits bike-lane edges by parking presence.
 5. `bike_lane_analysis_with_parking` / `bike_lane_analysis_no_parking` — assign LTS 1–4 based on speed, lanes, width (prefix `b`/`c`).
 6. `mixed_traffic` — assigns LTS 1–4 based on highway type, speed, lanes (prefix `m`).
-7. Node LTS — assigned in `lts_osm.py` as max of intersecting edge LTS (vectorized), reduced by traffic signals or stop signs.
+7. `exclude_isolated_components` — finds connected components of the LTS 1–4 edges (LTS-0 edges don't link) and sets edges in components shorter than `--min-component-length` to LTS 0 (rule `i1`), removing islands from the output.
+8. Node LTS — assigned in `lts_osm.py` as max of intersecting edge LTS (vectorized), reduced by traffic signals or stop signs.
 
 ### OSM tag parsing
 

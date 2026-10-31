@@ -1,4 +1,5 @@
 import pytest
+import networkx as nx
 import pandas as pd
 import numpy as np
 import re
@@ -44,6 +45,18 @@ def biking_permitted(gdf_edges):
                   
     return gdf_allowed, gdf_not_allowed
 
+def is_crosswalk(gdf_edges):
+    """
+    Crosswalks are footways tagged footway=crossing or with any crossing=* tag.
+    The Overpass query already drops these; this catches them in XMLs downloaded before that filter.
+    """
+    if 'crossing' in gdf_edges.columns:
+        has_crossing_tag = gdf_edges['crossing'].notna()
+    else:
+        has_crossing_tag = pd.Series(False, index=gdf_edges.index)
+
+    return (gdf_edges['highway'] == 'footway') & ((gdf_edges['footway'] == 'crossing') | has_crossing_tag)
+
 def is_separated_path(gdf_edges):
     """
     Bike Ottawa's code includes a construction filter:
@@ -72,7 +85,7 @@ def is_separated_path(gdf_edges):
     
     conditions = [(gdf_edges['highway'] == 'cycleway'), # s3
                   (gdf_edges['highway'] == 'path'), #s1
-                  ((gdf_edges['highway'] == 'footway') & ~(gdf_edges['footway'] == 'crossing')), #s2
+                  ((gdf_edges['highway'] == 'footway') & ~is_crosswalk(gdf_edges)), #s2
                   (np.any(gdf_edges[cycleway_tags] == 'track', axis = 1)) , # s7
                   (np.any(gdf_edges[cycleway_tags] == 'opposite_track', axis = 1)) # s8
                   ]
@@ -282,11 +295,11 @@ def mixed_traffic(gdf_edges):
     conditions = [
         (gdf_edges['motor_vehicle'] == 'no'),
         (gdf_edges['highway'] == 'pedestrian'),
-        (gdf_edges['highway'] == 'footway') & (gdf_edges['footway'] == 'crossing'),
+        is_crosswalk(gdf_edges),
         (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'alley'),
         (gdf_edges['highway'] == 'track'),
-        (gdf_edges['maxspeed_assumed'] <= 50) & (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'parking_aisle'),
-        (gdf_edges['maxspeed_assumed'] <= 50) & (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'driveway'),
+        (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'parking_aisle'),
+        (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'driveway'),
         (gdf_edges['maxspeed_assumed'] <= 35) & (gdf_edges['highway'] == 'service'),
         (gdf_edges['maxspeed_assumed'] <= 40) & (gdf_edges['lanes_assumed'] <= 3) & (gdf_edges['highway'] == 'residential'),
         (gdf_edges['maxspeed_assumed'] <= 40) & (gdf_edges['lanes_assumed'] <= 3),
@@ -304,13 +317,64 @@ def mixed_traffic(gdf_edges):
     # create a new column and use np.select to assign values to it using our lists as arguments
     gdf_edges['rule'] = np.select(conditions, values, default='m0')
               
-    rule_dict = {'m17':1, 'm13':1, 'm14':2, 'm2':1, 'm15':2, 'm3':2, 'm4':2, 'm16':2, 'm5':1, 'm6':2, 'm7':3, 'm8':4, 'm9':2, 'm10':3, 'm11':4, 'm12':4}
+    rule_dict = {'m17':1, 'm13':1, 'm14':0, 'm2':1, 'm15':2, 'm3':0, 'm4':0, 'm16':2, 'm5':1, 'm6':2, 'm7':3, 'm8':4, 'm9':2, 'm10':3, 'm11':4, 'm12':4}
               
     gdf_edges['lts'] = gdf_edges['rule'].map(rule_dict)
     
+    return gdf_edges
+
+def exclude_isolated_components(gdf_edges, min_length):
+    """
+    Exclude edges in small isolated networks (islands) from LTS.
+    Connectivity is computed over LTS 1-4 edges only, since LTS 0 edges are not in the output.
+    Edges in a connected component shorter than min_length (metres) get lts 0 and rule i1.
+    A min_length of 0 or less disables the filter.
+    """
+    if min_length <= 0:
+        return gdf_edges
+    is_rated = gdf_edges['lts'].between(1, 4).to_numpy()
+    rated = gdf_edges[is_rated]
+    u = rated.index.get_level_values('u').to_numpy()
+    v = rated.index.get_level_values('v').to_numpy()
+
+    graph = nx.Graph()
+    graph.add_edges_from(zip(u, v))
+    node_component = {node: i for i, nodes in enumerate(nx.connected_components(graph)) for node in nodes}
+    component = pd.Series(u).map(node_component)
+
+    # two-way ways have one edge per direction, count their length once
+    undirected = pd.DataFrame({'a': np.minimum(u, v), 'b': np.maximum(u, v),
+                               'component': component, 'length': rated['length'].to_numpy()})
+    component_length = undirected.drop_duplicates(['a', 'b']).groupby('component')['length'].sum()
+
+    is_island = np.zeros(len(gdf_edges), dtype=bool)
+    is_island[is_rated] = (component.map(component_length) < min_length).to_numpy()
+    gdf_edges.loc[is_island, 'lts'] = 0
+    gdf_edges.loc[is_island, 'rule'] = 'i1'
+
     return gdf_edges
 
 ### TESTS ###
 def test_answer():
     df = pd.DataFrame()
     assert biking_permitted(df) == 5
+
+def test_is_crosswalk():
+    df = pd.DataFrame({'highway': ['footway', 'footway', 'footway', 'cycleway'],
+                       'footway': ['crossing', None, None, None],
+                       'crossing': [None, 'marked', None, 'traffic_signals']})
+    assert is_crosswalk(df).tolist() == [True, True, False, False]
+    assert is_crosswalk(df.drop(columns='crossing')).tolist() == [True, False, False, False]
+
+def test_exclude_isolated_components():
+    index = pd.MultiIndex.from_tuples([(1, 2, 0), (2, 1, 0), (2, 3, 0),  # connected chain, 200m
+                                       (10, 11, 0), (11, 10, 0),         # island, 50m
+                                       (3, 20, 0), (20, 21, 0)],         # linked to chain only by an lts 0 edge
+                                      names=['u', 'v', 'key'])
+    df = pd.DataFrame({'lts': [1, 1, 2, 2, 2, 0, 2],
+                       'rule': ['s3', 's3', 'm9', 'm9', 'm9', 'p2', 'm9'],
+                       'length': [100, 100, 100, 50, 50, 10, 40]}, index=index)
+    assert exclude_isolated_components(df.copy(), 0).equals(df)
+    result = exclude_isolated_components(df.copy(), 150)
+    assert result['rule'].tolist() == ['s3', 's3', 'm9', 'i1', 'i1', 'p2', 'i1']
+    assert result['lts'].tolist() == [1, 1, 2, 0, 0, 0, 0]
