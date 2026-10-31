@@ -80,6 +80,15 @@ def test_read_timeout_outlasts_query_timeout():
     assert get_read_timeout("way(1);out;") == overpass.OVERPASS_DEFAULT_QUERY_TIMEOUT + 60
 
 
+def test_query_excludes_crosswalks_parking_aisles_and_driveways():
+    """Validate that the built query filters out crosswalks, parking aisles and driveways"""
+    query_str = overpass.build_overpass_query("Q1")
+    assert '["service"!~"private|parking_aisle|driveway"]' in query_str
+    assert '["footway"!="crossing"]' in query_str
+    assert '- way["highway"="footway"]["crossing"](area.searchArea);' in query_str
+    assert '["wikidata"="Q1"]->.searchArea;' in query_str
+
+
 class FakeResponse:
     def __init__(self, chunks=(), status_code=200, fail_after_chunks=False):
         self.chunks = chunks
@@ -124,7 +133,7 @@ def sleeps(monkeypatch):
 
 
 def test_retries_after_connection_dropped_mid_download(tmp_path, sleeps):
-    """Test that the process retries after connection gets dropped mid download""""
+    """Test that the process retries after connection gets dropped mid download"""
     output = str(tmp_path / "area.xml")
     session = FakeSession([
         FakeResponse([VALID_XML[:150]], fail_after_chunks=True),
