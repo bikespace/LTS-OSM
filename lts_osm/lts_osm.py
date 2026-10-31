@@ -17,7 +17,8 @@ import time
 
 # import lts calculation functions
 from lts_functions import (biking_permitted, is_separated_path, is_bike_lane, parking_present,
-                           bike_lane_analysis_no_parking, bike_lane_analysis_with_parking, mixed_traffic)
+                           bike_lane_analysis_no_parking, bike_lane_analysis_with_parking, mixed_traffic,
+                           exclude_isolated_components)
 from overpass import (OverpassDownloadError, OverpassIncompleteError, build_overpass_query,
                       download_with_retries, make_overpass_session, validate_osm_xml)
 
@@ -69,6 +70,12 @@ def parse_args() -> argparse.Namespace:
         "--downloaded-xml-json-map",
         type=str,
         help="Path to a json file map of areas and it's downloaded xml path",
+    )
+    parser.add_argument(
+        "--min-component-length",
+        type=float,
+        default=100,
+        help="Exclude isolated networks shorter than this many metres from LTS (0 disables)",
     )
     parser.add_argument(
         "--resume-run-dir",
@@ -146,6 +153,9 @@ def build_area_gdfs(run_dir: Path, area_name: str, osm_data_xml_path: str) -> tu
 
     logger.info("Building graph from %s", osm_data_xml_path)
     area_graph = ox.graph_from_xml(osm_data_xml_path, retain_all=True, simplify=False)
+    # only merge segments of the same OSM way so tag values stay scalar for the LTS rules,
+    # and keep tagged nodes (traffic_signals / stop) used by node LTS
+    area_graph = ox.simplify_graph(area_graph, node_attrs_include=["highway"], edge_attrs_differ=["osmid"])
     gdf_nodes, gdf_edges = ox.graph_to_gdfs(area_graph)
 
     logger.info("Saving GeoDataFrames to %s", parquet_dir)
@@ -154,7 +164,9 @@ def build_area_gdfs(run_dir: Path, area_name: str, osm_data_xml_path: str) -> tu
 
     return gdf_nodes, gdf_edges
 
-def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gdf_edges: gpd.GeoDataFrame) -> dict[str, Any]:
+def calculate_lts(
+    run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gdf_edges: gpd.GeoDataFrame, min_component_length: float
+) -> dict[str, Any]:
     geojson_dir = run_dir / "lts_geojson"
     geojson_dir.mkdir(parents=True, exist_ok=True)
     csv_dir = run_dir / "lts_csv"
@@ -195,6 +207,10 @@ def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gd
     gdf_not_allowed['lts'] = 0
 
     all_lts = pd.concat([separated_edges, parking_lts, no_parking_lts, lts_no_lane, gdf_not_allowed])
+
+    # drop small islands left disconnected from the rest of the LTS 1-4 network
+    all_lts = exclude_isolated_components(all_lts, min_component_length)
+    logger.info(f"Isolated edges excluded (< {min_component_length} m): {(all_lts['rule'] == 'i1').sum()}")
 
     # decision rule glossary
     # these are from Bike Ottawa's stressmodel code
@@ -239,7 +255,8 @@ def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gd
                         'm9':'Setting LTS to 2 because maxspeed is up to 50 km/h and lanes are 2 or less and highway=\'residential\'.',
                         'm10':'Setting LTS to 3 because maxspeed is up to 50 km/h and lanes are 3 or less on non-residential highway.',
                         'm11':'Setting LTS to 4 because the number of lanes is greater than 3.',
-                        'm12':'Setting LTS to 4 because maxspeed is greater than 50 km/h.'}
+                        'm12':'Setting LTS to 4 because maxspeed is greater than 50 km/h.',
+                        'i1':f'Isolated segment excluded from LTS (LTS 0) because its connected network is shorter than {min_component_length} m.'}
 
     simplified_message_dict = {'p2':r'bicycle $=$ "no"',
                      'p6':r'access $=$ "no"',
@@ -282,7 +299,8 @@ def calculate_lts(run_dir: Path, area_name: str, gdf_nodes: gpd.GeoDataFrame, gd
                      'm9':r'mixed traffic, speed $\leq$ 50 km/h, highway $=$ "residential",$\leq$ 2 lanes',
                      'm10':r'mixed traffic, speed $\leq$ 50 km/h, highway $\neq$ "residential", $\leq$ 3 lanes',
                      'm11':r'mixed traffic, speed $\leq$ 50 km/h, lanes $>$ 3',
-                     'm12':r'mixed traffic, speed $>$ 50 km/h'}
+                     'm12':r'mixed traffic, speed $>$ 50 km/h',
+                     'i1':r'isolated segment (excluded)'}
 
     all_lts['message'] = all_lts['rule'].map(rule_message_dict)
     all_lts['short_message'] = all_lts['rule'].map(simplified_message_dict)
@@ -401,7 +419,9 @@ def main(args: argparse.Namespace) -> int:
             continue
         logger.info(f"Processing area {processed_area.get("name")}, XML filepath: {processed_area.get("xml_file_path")}")
         gdf_nodes, gdf_edges = build_area_gdfs(run_dir, processed_area.get("name"), processed_area.get("xml_file_path"))
-        area_lts_output = calculate_lts(run_dir, processed_area.get("name"), gdf_nodes, gdf_edges)
+        area_lts_output = calculate_lts(
+            run_dir, processed_area.get("name"), gdf_nodes, gdf_edges, args.min_component_length
+        )
         areas_lts_outputs_list.append(area_lts_output)
     areas_lts_outputs["areas"] = areas_lts_outputs_list
 
