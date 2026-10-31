@@ -44,6 +44,18 @@ def biking_permitted(gdf_edges):
                   
     return gdf_allowed, gdf_not_allowed
 
+def is_crosswalk(gdf_edges):
+    """
+    Crosswalks are footways tagged footway=crossing or with any crossing=* tag.
+    The Overpass query already drops these; this catches them in XMLs downloaded before that filter.
+    """
+    if 'crossing' in gdf_edges.columns:
+        has_crossing_tag = gdf_edges['crossing'].notna()
+    else:
+        has_crossing_tag = pd.Series(False, index=gdf_edges.index)
+
+    return (gdf_edges['highway'] == 'footway') & ((gdf_edges['footway'] == 'crossing') | has_crossing_tag)
+
 def is_separated_path(gdf_edges):
     """
     Bike Ottawa's code includes a construction filter:
@@ -72,7 +84,7 @@ def is_separated_path(gdf_edges):
     
     conditions = [(gdf_edges['highway'] == 'cycleway'), # s3
                   (gdf_edges['highway'] == 'path'), #s1
-                  ((gdf_edges['highway'] == 'footway') & ~(gdf_edges['footway'] == 'crossing')), #s2
+                  ((gdf_edges['highway'] == 'footway') & ~is_crosswalk(gdf_edges)), #s2
                   (np.any(gdf_edges[cycleway_tags] == 'track', axis = 1)) , # s7
                   (np.any(gdf_edges[cycleway_tags] == 'opposite_track', axis = 1)) # s8
                   ]
@@ -282,11 +294,11 @@ def mixed_traffic(gdf_edges):
     conditions = [
         (gdf_edges['motor_vehicle'] == 'no'),
         (gdf_edges['highway'] == 'pedestrian'),
-        (gdf_edges['highway'] == 'footway') & (gdf_edges['footway'] == 'crossing'),
+        is_crosswalk(gdf_edges),
         (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'alley'),
         (gdf_edges['highway'] == 'track'),
-        (gdf_edges['maxspeed_assumed'] <= 50) & (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'parking_aisle'),
-        (gdf_edges['maxspeed_assumed'] <= 50) & (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'driveway'),
+        (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'parking_aisle'),
+        (gdf_edges['highway'] == 'service') & (gdf_edges['service'] == 'driveway'),
         (gdf_edges['maxspeed_assumed'] <= 35) & (gdf_edges['highway'] == 'service'),
         (gdf_edges['maxspeed_assumed'] <= 40) & (gdf_edges['lanes_assumed'] <= 3) & (gdf_edges['highway'] == 'residential'),
         (gdf_edges['maxspeed_assumed'] <= 40) & (gdf_edges['lanes_assumed'] <= 3),
@@ -304,7 +316,7 @@ def mixed_traffic(gdf_edges):
     # create a new column and use np.select to assign values to it using our lists as arguments
     gdf_edges['rule'] = np.select(conditions, values, default='m0')
               
-    rule_dict = {'m17':1, 'm13':1, 'm14':2, 'm2':1, 'm15':2, 'm3':2, 'm4':2, 'm16':2, 'm5':1, 'm6':2, 'm7':3, 'm8':4, 'm9':2, 'm10':3, 'm11':4, 'm12':4}
+    rule_dict = {'m17':1, 'm13':1, 'm14':0, 'm2':1, 'm15':2, 'm3':0, 'm4':0, 'm16':2, 'm5':1, 'm6':2, 'm7':3, 'm8':4, 'm9':2, 'm10':3, 'm11':4, 'm12':4}
               
     gdf_edges['lts'] = gdf_edges['rule'].map(rule_dict)
     
@@ -314,3 +326,10 @@ def mixed_traffic(gdf_edges):
 def test_answer():
     df = pd.DataFrame()
     assert biking_permitted(df) == 5
+
+def test_is_crosswalk():
+    df = pd.DataFrame({'highway': ['footway', 'footway', 'footway', 'cycleway'],
+                       'footway': ['crossing', None, None, None],
+                       'crossing': [None, 'marked', None, 'traffic_signals']})
+    assert is_crosswalk(df).tolist() == [True, True, False, False]
+    assert is_crosswalk(df.drop(columns='crossing')).tolist() == [True, False, False, False]

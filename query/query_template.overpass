@@ -1,7 +1,12 @@
 [timeout:600][out:xml][maxsize:500000000];
 area
-  ["$key"="$value"];
-(way["highway"]["area"!~"yes"]["access"!~"private"]["highway"!~"abandoned|bus_guideway|corridor|elevator|escalator|motor|planned|platform|proposed|raceway|steps"]["bicycle"!~"no"]["service"!~"private"](area);
-  node(w);
+  ["$key"="$value"]->.searchArea;
+(
+  way["highway"]["area"!~"yes"]["access"!~"private"]["highway"!~"abandoned|bus_guideway|corridor|elevator|escalator|motor|planned|platform|proposed|raceway|steps"]["bicycle"!~"no"]["service"!~"private|parking_aisle|driveway"]["footway"!="crossing"](area.searchArea);
+  - way["highway"="footway"]["crossing"](area.searchArea);
+)->.ways;
+(
+  .ways;
+  node(w.ways);
 );
 out body;
